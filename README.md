@@ -16,6 +16,8 @@ This will print out 4 lines because by default the script uses 4 chars to XOR on
 ```shell
 python3 phpXORer.py -e 1 -t 'echo "test";'
 python3 phpXORer.py -e 1 -t 'echo "test";' -d 6
+python3 phpXORer.py -e 2 -t 'testing()'
+python3 phpXORer.py -e 2 -t 'testing(test())'
 ```
 This will again print out 4 lines but it will either use eval or echo as form of exploitation.
 

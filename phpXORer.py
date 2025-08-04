@@ -1,7 +1,6 @@
 from functools import reduce
 import argparse
 import string
-import re
 import json
 import random
 
@@ -15,7 +14,9 @@ def random_char(blacklist):
         if random_char not in blacklist:
             return random_char
 
-def find_combinations(target_char, xor_char, depth, blacklist, current_combo=[]):
+def find_combinations(target_char, xor_char, depth, blacklist, current_combo=None):
+    if current_combo is None:
+        current_combo = []
     target_value = ord(target_char)
     xor_value = ord(xor_char)
     printable_chars = ''.join([c for c in string.printable if c != '\u000b'])
@@ -49,58 +50,114 @@ def output_string(inps):
         result.append(escaped_inp)
     return result
 
-def xor_find_matching_character(target_char, xor_char):
-    # Convert characters to ASCII values
-    target_char_ascii = ord(target_char)
-    xor_char_ascii = ord(xor_char)
-    
-    # Iterate through printable characters to find a match
-    for printable_char in string.printable:
-        xor_result = ord(printable_char) ^ xor_char_ascii
-        
-        if chr(xor_result) == target_char:
-            return printable_char
-    raise Exception("No matching printable character found for encoding")
+def parse_nested_call(expression):
+    """
+    Parses a nested PHP expression into a tree:
+    Examples:
+    'var_dump' -> ['var_dump']
+    'var_dump()' -> ['var_dump', []]
+    'var_dump(get_cwd())' -> ['var_dump', ['get_cwd', []]]
+    """
+    expression = expression.strip()
+    if not expression:
+        return []
 
-def split_string(input_string):
-    # Regular expression pattern to match contents inside parentheses
-    pattern = r'\("(.*?)"\)'
+    # Check if there's a '(' in expression
+    if '(' not in expression:
+        # No parentheses = single function name
+        return [expression]
 
-    # Using re.findall to extract all matches
-    matches = re.findall(pattern, input_string)
+    # Find function name (before first '(')
+    func_name_end = expression.index('(')
+    func_name = expression[:func_name_end].strip()
 
-    # Initialize an empty list to store contents inside parentheses
-    contents_list = []
+    # Extract inner content between matching parentheses
+    i = func_name_end
+    depth = 0
+    start_inner = None
+    for idx in range(i, len(expression)):
+        if expression[idx] == '(':
+            if depth == 0:
+                start_inner = idx + 1
+            depth += 1
+        elif expression[idx] == ')':
+            depth -= 1
+            if depth == 0:
+                end_inner = idx
+                break
+    else:
+        raise Exception("Unbalanced parentheses")
 
-    # Iterate through matches and store contents in the list
-    for match in matches:
-        contents_list.append(match)
-    return contents_list
+    inner_expr = expression[start_inner:end_inner].strip()
+
+    if inner_expr == '':
+        # empty args
+        return [func_name, []]
+
+    # For now, we assume only single argument (could extend to multiple comma-separated later)
+    # Parse inner expression recursively
+    inner_parsed = parse_nested_call(inner_expr)
+
+    return [func_name, inner_parsed]
+
+def encode_function_tree(tree, xor_char, blacklist):
+    # If tree is just a function name string, XOR encode and wrap in ()
+    if isinstance(tree, str):
+        output = []
+        for char in tree:
+            results = []
+            depth = initial_depth
+            while not results:
+                results = find_combinations(char, xor_char, depth, blacklist)
+                depth += 1
+                if depth > max_depth:
+                    raise Exception("Too many depths")
+            r = output_string(results[0])
+            output.append("(" + " ^ ".join(r) + f" ^ {output_string(xor_char)[0]})")
+        return "(" + ".".join(output) + ")"
+
+    # If tree is a list, first element is function name (string), second element is arguments (list or empty)
+    if isinstance(tree, list):
+        func_name = tree[0]
+        encoded_func = encode_function_tree(func_name, xor_char, blacklist)
+
+        # If no args or empty args (empty list)
+        if len(tree) == 2 and tree[1] == []:
+            return f"{encoded_func}()"
+        elif len(tree) == 1:
+            return f"{encoded_func}"
+
+        # Otherwise, recursively encode argument(s)
+        encoded_arg = encode_function_tree(tree[1], xor_char, blacklist)
+        return f"{encoded_func}({encoded_arg})"
+
+    raise Exception("Invalid tree structure")
+
+def xor_encode_string(string_to_encode, xor_char, blacklist, random=False):
+    output = []
+    for char in string_to_encode:
+        depth = initial_depth
+        results = []
+        current_xor = xor_char
+        while not results:
+            if random:
+                current_xor = random_char(blacklist)
+            results = find_combinations(char, current_xor, depth, blacklist)
+            depth += 1
+            if depth > max_depth:
+                raise Exception("Too many depths")
+        r = output_string(results[0])
+        output.append("(" + " ^ ".join(r) + f" ^ {output_string(current_xor)[0]})")
+    return ".".join(output)
+
 
 def XOR_encode(string_to_encode:str, blacklist: list, xor_chars:list, random:bool):
     for xor_char in xor_chars:
         try:
-            if not random:
-                print(f"# --- {xor_char} --- #")
-            else:
-                print(f"# --- Random --- #")
-            output = []
-            for char in string_to_encode:
-                results = []
-                depth = initial_depth
-                while not results:
-                    if random:
-                        xor_char = random_char(blacklist)
-                    results = find_combinations(char, xor_char, depth, blacklist)
-                    depth += 1
-                    if depth > max_depth:
-                        raise Exception("To many depths")
-                r = output_string(results[0])
-                output.append("("+" ^ ".join(r)+f' ^ {output_string(xor_char)[0]})')
-
-            print(f"(", end="")
-            print(".".join(output) + ");")
-            print("")
+            label = xor_char if not random else "Random"
+            print(f"# --- {label} --- #")
+            encoded = xor_encode_string(string_to_encode, xor_char, blacklist, random)
+            print(f"({encoded});\n")
         except Exception as e:
             print(e)
             continue
@@ -115,12 +172,11 @@ def XOR_all(blacklist: list, xor_chars: list, random:bool):
                 try:
                     results = []
                     depth = initial_depth
-                    #encoded_char = xor_find_matching_character(char, xor_char)
                     while not results:
                         results = find_combinations(char, xor_char, depth, blacklist)
                         depth += 1
                         if depth > max_depth:
-                            raise Exception("To many depths")
+                            raise Exception("Too many depths")
                     r = output_string(results[0])
                     print(f"{repr(char)} => "+" ^ ".join(r)+f' ^ {output_string(xor_char)[0]}')
                 except Exception as e:
@@ -131,81 +187,24 @@ def XOR_all(blacklist: list, xor_chars: list, random:bool):
             print("")
         
 
-def XOR_echo(string_to_encode:str, blacklist: list, xor_chars: list, random:bool):
-    """
-    Usage: python3 phpXORer.py -e 2 -t '("writeMsg")("")'
-    This can be pasted directly and it will work
-    Usage: python3 phpXORer.py -e 2 -t '("writeMsg")()'
-    With this you have to add at the end () because empty brackets get deleted. 
-    They have to have "" inside of them 
-    """
-    global initial_depth
-    global max_depth
-    string_to_encode_array = split_string(string_to_encode)
-
+def XOR_echo(string_to_encode: str, blacklist: list, xor_chars: list, random: bool):
+    tree = parse_nested_call(string_to_encode)
     for xor_char in xor_chars:
         try:
-            if not random:
-                print(f"# --- {xor_char} --- #")
-            else:
-                print(f"# --- Random --- #")
-            output = ""
-            output_array = []
-            for string_to_encode in string_to_encode_array:
-                output += "("
-                for char in string_to_encode:
-                    results = []
-                    depth = initial_depth
-                    #encoded_char = xor_find_matching_character(char, xor_char)
-                    while not results:
-                        if random:
-                            xor_char = random_char(blacklist)
-                        results = find_combinations(char, xor_char, depth, blacklist)
-                        depth += 1
-                        if depth > max_depth:
-                            raise Exception("To many depths")
-                    r = output_string(results[0])
-                    output_array.append("("+" ^ ".join(r)+f' ^ {output_string(xor_char)[0]})')
-                output += ".".join(output_array)
-                output += ")"
-            print(f"echo ", end="")
-            print(output + ";")
-            print("")
+            print(f"# --- XOR echo: {xor_char} --- #")
+            encoded = encode_function_tree(tree, xor_char, blacklist)
+            print(f"{encoded}\n")
         except Exception as e:
             print(e)
             continue
 
 def XOR_eval(string_to_encode:str, blacklist: list, xor_chars: list, random:bool):
-    global initial_depth
-    global max_depth
     for xor_char in xor_chars:
         try:
-            if not random:
-                print(f"# --- {xor_char} --- #")
-            else:
-                print(f"# --- Random --- #")
-            output = []
-            for char in string_to_encode:
-                results = []
-                depth = initial_depth
-                while not results:
-                    if random:
-                        xor_char = random_char(blacklist)
-                    results = find_combinations(char, xor_char, depth, blacklist)
-                    depth += 1
-                    if depth > max_depth:
-                        raise Exception("To many depths")
-                r = output_string(results[0])
-
-                # print(r)
-                # print(results[0])
-                # input()
-                output.append("("+" ^ ".join(r)+f' ^ {output_string(xor_char)[0]})')
-
-            # Print the encoded output
-            print(f"eval(", end="")
-            print(".".join(output) + ");")
-            print("")
+            label = xor_char if not random else "Random"
+            print(f"# --- XOR eval: {label} --- #")
+            encoded = xor_encode_string(string_to_encode, xor_char, blacklist, random)
+            print(encoded)
         except Exception as e:
             print(e)
             continue
@@ -234,40 +233,41 @@ xor_group.add_argument('-c', '--char', type=str, help='One character to XOR with
 xor_group.add_argument('-r', '--random', action='store_true', help='Use random XOR characters')
 
 
-parser.add_argument('-b', '--blacklist', type=str, help='Blacklist separated by commas')
+# parser.add_argument('-b', '--blacklist', type=str, help='Blacklist separated by commas')
 parser.add_argument('-d', '--depth', type=int, help='Increase or decrease the depth of recursion')
 
 # Parse the arguments
-args = parser.parse_args()
+if __name__ == "__main__":
+    args = parser.parse_args()
 
-# Blacklist array
-if args.blacklist:
-    parser.error("Add the blacklist inside the script (Blacklist array). Dont forget to escape the characters")
-blacklist = [] # Add blacklist inside script ["\\", "\t", ","]
+    # Blacklist array
+    # if args.blacklist:
+    #     parser.error("Add the blacklist inside the script (Blacklist array). Dont forget to escape the characters")
+    blacklist = ["@", "[", "]", "{", "}", "\\", "/", ",", "=", "*", "+", "-", ";", "?", "!", "\n", "\r", "\t", "\f", "%", "$", "'", "<", ">", "\""]
+    blacklist += list(string.ascii_letters)
 
+    if args.depth:
+        max_depth = int(args.depth)
 
-if args.depth:
-    max_depth = int(args.depth)
-
-xor_chars = None
-if not args.char:
-    if not args.random:
-        xor_chars = ["@", "[", "\\", "^"]
+    xor_chars = None
+    if not args.char:
+        if not args.random:
+            xor_chars = ["@", "[", "\\", "^"]
+        else:
+            xor_chars = ["1"]
     else:
-        xor_chars = ["1"]
-else:
-    xor_chars = list(args.char)
+        xor_chars = list(args.char)
 
-if args.all:
-    if args.numerical or args.text:
-        parser.error("-a cannot be used with -e or -t")
-    XOR_all(blacklist, xor_chars, args.random)
-elif args.numerical or args.text:
-    if not args.text:
-        parser.error("-t should not be empty")
-    if args.numerical == 1:
-        XOR_eval(args.text, blacklist, xor_chars, args.random)
-    elif args.numerical == 2:
-        XOR_echo(args.text, blacklist, xor_chars, args.random)
-    else:
-        XOR_encode(args.text, blacklist, xor_chars, args.random)
+    if args.all:
+        if args.numerical or args.text:
+            parser.error("-a cannot be used with -e or -t")
+        XOR_all(blacklist, xor_chars, args.random)
+    elif args.numerical or args.text:
+        if not args.text:
+            parser.error("-t should not be empty")
+        if args.numerical == 1:
+            XOR_eval(args.text, blacklist, xor_chars, args.random)
+        elif args.numerical == 2:
+            XOR_echo(args.text, blacklist, xor_chars, args.random)
+        else:
+            XOR_encode(args.text, blacklist, xor_chars, args.random)
